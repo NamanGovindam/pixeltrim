@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perfect Smart Cropper</title>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  text-align: center;
+  background: #f5f6fa;
+  margin: 0;
+  padding: 10px;
+}
+canvas {
+  border: 1px solid #ccc;
+  margin-top: 10px;
+  max-width: 95%;
+  height: auto;
+  touch-action: none;
+}
+.controls {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+button, input[type="range"] {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 5px;
+  border: none;
+  cursor: pointer;
+}
+button { background: #007bff; color: white; }
+button:hover { background: #0056b3; }
+.filter-group label { display:inline-block; margin:0 6px; }
+</style>
+</head>
+<body>
+
+<h2>Perfect Smart Cropper</h2>
+<input type="file" id="fileInput" accept="image/*">
+<p>(Or paste an image directly)</p>
+
+<div class="controls">
+  <button id="rotateLeft">⟲ Rotate</button>
+  <button id="rotateRight">⟳ Rotate</button>
+  <button id="flipX">↔ Mirror X</button>
+  <button id="flipY">↕ Mirror Y</button>
+  <button id="cropBtn" disabled>✂️ Crop</button>
+  <button id="postRotateLeft" disabled>⟲ Rotate Cropped</button>
+  <button id="postRotateRight" disabled>⟳ Rotate Cropped</button>
+  <button id="waterBtn" disabled>💧 Watermark</button>
+  <button id="downloadBtn" disabled>⬇️ Download</button>
+  <button id="copyBtn" disabled>📋 Copy</button>
+</div>
+
+<div class="controls filter-group">
+  <label>B <input type="range" id="brightness" min="0.5" max="2" step="0.1" value="1"></label>
+  <label>C <input type="range" id="contrast" min="0.5" max="2" step="0.1" value="1"></label>
+  <label>Blur <input type="range" id="blur" min="0" max="10" step="0.5" value="0"></label>
+</div>
+
+<canvas id="canvas"></canvas>
+<h4>Cropped Preview</h4>
+<canvas id="preview"></canvas>
+
+<script>
+const fileInput=document.getElementById("fileInput");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const preview=document.getElementById("preview");
+const cropBtn=document.getElementById("cropBtn");
+const downloadBtn=document.getElementById("downloadBtn");
+const copyBtn=document.getElementById("copyBtn");
+const waterBtn=document.getElementById("waterBtn");
+const postRotateLeft=document.getElementById("postRotateLeft");
+const postRotateRight=document.getElementById("postRotateRight");
+const brightness=document.getElementById("brightness");
+const contrast=document.getElementById("contrast");
+const blur=document.getElementById("blur");
+
+let img=new Image();
+let points=[];
+let draggingPoint=-1;
+const pointRadius=8;
+let rotation=0,flipX=1,flipY=1;
+let croppedCanvas,postRotation=0;
+
+function fitCanvas(){
+  const rad=Math.abs(rotation%180)*Math.PI/180;
+  const sin=Math.abs(Math.sin(rad)),cos=Math.abs(Math.cos(rad));
+  canvas.width=img.width*cos+img.height*sin;
+  canvas.height=img.width*sin+img.height*cos;
+}
+
+function relToCanvas(p){return {x:p.x*canvas.width,y:p.y*canvas.height};}
+function canvasToRel(x,y){return {x:x/canvas.width,y:y/canvas.height};}
+
+function drawImage(){
+  if(!img.width)return;
+  fitCanvas();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();
+  ctx.translate(canvas.width/2,canvas.height/2);
+  ctx.rotate(rotation*Math.PI/180);
+  ctx.scale(flipX,flipY);
+  ctx.drawImage(img,-img.width/2,-img.height/2);
+  ctx.restore();
+
+  if(points.length){
+    ctx.fillStyle="rgba(255,0,0,0.6)";
+    ctx.strokeStyle="red";
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    const p0=relToCanvas(points[0]);
+    ctx.moveTo(p0.x,p0.y);
+    for(let i=1;i<points.length;i++){
+      const p=relToCanvas(points[i]);
+      ctx.lineTo(p.x,p.y);
+    }
+    ctx.closePath();ctx.stroke();
+    for(let p of points){
+      const pt=relToCanvas(p);
+      ctx.beginPath();ctx.arc(pt.x,pt.y,pointRadius,0,Math.PI*2);ctx.fill();
+    }
+  }
+}
+
+canvas.addEventListener("mousedown",startDrag);
+canvas.addEventListener("touchstart",e=>startDrag(e.touches[0]));
+canvas.addEventListener("mousemove",moveDrag);
+canvas.addEventListener("touchmove",e=>moveDrag(e.touches[0]));
+canvas.addEventListener("mouseup",endDrag);
+canvas.addEventListener("mouseleave",endDrag);
+canvas.addEventListener("touchend",endDrag);
+
+function startDrag(e){
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+  draggingPoint=points.findIndex(p=>{
+    const pt=relToCanvas(p);
+    return Math.hypot(pt.x-mx,pt.y-my)<pointRadius;
+  });
+}
+function moveDrag(e){
+  if(draggingPoint>=0){
+    const rect=canvas.getBoundingClientRect();
+    points[draggingPoint]=canvasToRel(e.clientX-rect.left,e.clientY-rect.top);
+    drawImage();
+  }
+}
+function endDrag(){draggingPoint=-1;}
+
+fileInput.addEventListener("change",e=>{
+  const file=e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>loadImage(ev.target.result);
+  reader.readAsDataURL(file);
+});
+document.addEventListener("paste",e=>{
+  const item=[...e.clipboardData.items].find(i=>i.type.startsWith("image/"));
+  if(item){
+    const blob=item.getAsFile();
+    const reader=new FileReader();
+    reader.onload=ev=>loadImage(ev.target.result);
+    reader.readAsDataURL(blob);
+  }
+});
+
+function loadImage(src){
+  img=new Image();
+  img.onload=()=>{
+    rotation=0;flipX=1;flipY=1;postRotation=0;
+    points=[{x:0.2,y:0.2},{x:0.8,y:0.2},{x:0.9,y:0.8},{x:0.1,y:0.8}];
+    drawImage();cropBtn.disabled=false;
+  };
+  img.src=src;
+}
+
+document.getElementById("rotateLeft").onclick=()=>{rotation-=90;drawImage();};
+document.getElementById("rotateRight").onclick=()=>{rotation+=90;drawImage();};
+document.getElementById("flipX").onclick=()=>{flipX*=-1;drawImage();};
+document.getElementById("flipY").onclick=()=>{flipY*=-1;drawImage();};
+
+cropBtn.onclick=()=>{
+  if(!img.width)return;
+  fitCanvas();
+  const temp=document.createElement("canvas");
+  temp.width=canvas.width;temp.height=canvas.height;
+  const tctx=temp.getContext("2d");
+  tctx.save();
+  tctx.translate(temp.width/2,temp.height/2);
+  tctx.rotate(rotation*Math.PI/180);
+  tctx.scale(flipX,flipY);
+  tctx.drawImage(img,-img.width/2,-img.height/2);
+  tctx.restore();
+
+  const mask=document.createElement("canvas");
+  mask.width=temp.width;mask.height=temp.height;
+  const mctx=mask.getContext("2d");
+  mctx.drawImage(tctx.canvas,0,0);
+  mctx.beginPath();
+  const p0=relToCanvas(points[0]);
+  mctx.moveTo(p0.x,p0.y);
+  for(let i=1;i<points.length;i++){
+    const p=relToCanvas(points[i]);mctx.lineTo(p.x,p.y);
+  }
+  mctx.closePath();
+  mctx.globalCompositeOperation="destination-in";
+  mctx.fill();
+
+  // compute bounding box of polygon
+  const xs=points.map(p=>relToCanvas(p).x);
+  const ys=points.map(p=>relToCanvas(p).y);
+  const minX=Math.min(...xs),maxX=Math.max(...xs);
+  const minY=Math.min(...ys),maxY=Math.max(...ys);
+  const w=maxX-minX,h=maxY-minY;
+
+  // extract trimmed region only
+  const trimmed=document.createElement("canvas");
+  trimmed.width=w;trimmed.height=h;
+  trimmed.getContext("2d").drawImage(mask,minX,minY,w,h,0,0,w,h);
+
+  croppedCanvas=trimmed;
+  drawCroppedPreview();
+  postRotateLeft.disabled=postRotateRight.disabled=
+  waterBtn.disabled=downloadBtn.disabled=copyBtn.disabled=false;
+};
+
+function drawCroppedPreview(){
+  if(!croppedCanvas)return;
+  const pctx=preview.getContext("2d");
+  const w=croppedCanvas.width,h=croppedCanvas.height;
+  const rad=postRotation*Math.PI/180;
+  const sin=Math.abs(Math.sin(rad)),cos=Math.abs(Math.cos(rad));
+  const newW=w*cos+h*sin,newH=w*sin+h*cos;
+  preview.width=newW;preview.height=newH;
+  pctx.clearRect(0,0,newW,newH);
+  pctx.save();
+  pctx.translate(newW/2,newH/2);
+  pctx.rotate(rad);
+  pctx.filter=`brightness(${brightness.value}) contrast(${contrast.value}) blur(${blur.value}px)`;
+  pctx.drawImage(croppedCanvas,-w/2,-h/2);
+  pctx.restore();
+}
+
+postRotateLeft.onclick=()=>{postRotation-=90;drawCroppedPreview();};
+postRotateRight.onclick=()=>{postRotation+=90;drawCroppedPreview();};
+brightness.oninput=contrast.oninput=blur.oninput=drawCroppedPreview;
+
+waterBtn.onclick=()=>{
+  const pctx=preview.getContext("2d");
+  pctx.save();
+  pctx.font="30px Arial";
+  pctx.fillStyle="rgba(255,255,255,0.6)";
+  pctx.textAlign="right";
+  pctx.fillText("WATERMARK",preview.width-10,preview.height-10);
+  pctx.restore();
+};
+
+downloadBtn.onclick=()=>{
+  const link=document.createElement("a");
+  link.download="cropped.png";
+  link.href=preview.toDataURL("image/png");
+  link.click();
+};
+copyBtn.onclick=()=>{
+  preview.toBlob(async blob=>{
+    try{
+      await navigator.clipboard.write([new ClipboardItem({"image/png":blob})]);
+      alert("✅ Copied to clipboard!");
+    }catch(e){alert("❌ Copy failed: "+e);}
+  });
+};
+</script>
+</body>
+</html>
